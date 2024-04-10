@@ -1,0 +1,55 @@
+Using a factor of 1.300000 for bond detection.
+Using svd_inv_thresh=3.1600e-04 for inversions.
+Detecting primitive internals for 12 atoms.
+Excluding 0 frozen atoms from the internal coordinate setup.
+Checking 45 supplied typed primitives.
+45 primitives are valid at the current Cartesians.
+Defined primitives
+	000:         [1, 2]
+	001:         [1, 8]
+	002:        [3, 11]
+	003:         [0, 6]
+	004:         [2, 3]
+	005:         [1, 7]
+	006:        [3, 10]
+	007:         [0, 5]
+	008:         [3, 9]
+	009:         [0, 1]
+	010:         [0, 4]
+	011:      [8, 1, 7]
+	012:      [1, 0, 6]
+	013:      [1, 2, 3]
+	014:      [4, 0, 5]
+	015:     [2, 3, 11]
+	016:      [0, 1, 2]
+	017:      [0, 1, 8]
+	018:      [1, 0, 5]
+	019:      [9, 3, 2]
+	020:     [9, 3, 11]
+	021:      [2, 1, 7]
+	022:      [8, 1, 2]
+	023:      [0, 1, 7]
+	024:      [1, 0, 4]
+	025:     [10, 3, 2]
+	026:     [9, 3, 10]
+	027:      [4, 0, 6]
+	028:    [10, 3, 11]
+	029:      [5, 0, 6]
+	030:   [6, 0, 1, 2]
+	031:   [6, 0, 1, 8]
+	032:   [9, 3, 2, 1]
+	033:   [7, 1, 0, 4]
+	034:   [2, 1, 0, 5]
+	035:   [6, 0, 1, 7]
+	036:   [4, 0, 1, 8]
+	037:   [0, 1, 2, 3]
+	038:   [7, 1, 2, 3]
+	039:  [10, 3, 2, 1]
+	040:   [2, 1, 0, 4]
+	041:  [1, 2, 3, 11]
+	042:   [7, 1, 0, 5]
+	043:   [5, 0, 1, 8]
+	044:   [8, 1, 2, 3]
+
+Condition number of B^T.B=G: 1.6792e+02
+Diagonalizing G yielded 30 DLCs. Smallest eigenvalue is 4.5748e-02
