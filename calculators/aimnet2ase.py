@@ -106,10 +106,11 @@ class AIMNet2Calculator(ase.calculators.calculator.Calculator):
             dipole_moment += charge * pos
         
         dipole_moment = np.linalg.norm(dipole_moment)
-        # Convert from e*Å to Debye
-        conversion_factor = ase.units.Debye / (ase.units._e * ase.units.Bohr)
-        dipole_moment_debye = dipole_moment * conversion_factor
-        self.results['dipole_moment'] = dipole_moment_debye
+        # # Convert from e*Å to Debye
+        # conversion_factor = ase.units.Debye / (ase.units._e * ase.units.Bohr)
+        # dipole_moment_debye = dipole_moment * conversion_factor
+        # self.results['dipole_moment'] = dipole_moment_debye
+        self.results['dipole_moment'] = dipole_moment
         return self.results['dipole_moment']
 
     def get_forces(self, atoms):
