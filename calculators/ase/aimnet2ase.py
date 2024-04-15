@@ -1,12 +1,21 @@
 """
 This file defines the AIMNet2Calculator class, which integrates the AIMNet2 neural network model with the Atomic Simulation Environment (ASE) to enable the calculation of various molecular properties such as energy, forces, and vibrational modes. The class is designed to work with PyTorch models and utilizes ASE's Calculator interface for seamless integration with ASE's simulation framework. It includes methods for initializing the calculator with a specific model and charge, preparing input data for the model, and resetting the calculator's internal state.
 """
-
-import torch
-import ase.calculators.calculator
-import ase.vibrations
-import ase.units
+import os
+import json
+import re
+import argparse
 import numpy as np
+import torch
+import ase
+from ase import Atom, Atoms
+from ase.data import chemical_symbols
+from ase.io import read, write
+from ase.optimize import LBFGS
+from ase.units import *
+from ase.calculators.calculator import Calculator
+from ase.vibrations import *
+from openbabel import pybel
 
 """
 UNIT CONVERSIONS FOR COMPATIBILITY:
@@ -32,7 +41,6 @@ To bridge these differences, the following conversions must be applied:
 
 These conversions ensure that all properties calculated within this code align with Gaussian 16's unit conventions, enabling accurate and meaningful integration.
 """
-
 
 class AIMNet2Calculator(ase.calculators.calculator.Calculator):
     """ ASE calculator for AIMNet2 model
@@ -162,6 +170,37 @@ class AIMNet2Calculator(ase.calculators.calculator.Calculator):
         self.results['hessian'] = hessian  # Already in Hartrees/Bohr^2, no conversion needed
         return self.results['hessian']
 
+    def is_linear(self, atoms):
+        """
+        Determine if a molecule is linear based on its moment of inertia tensor.
+        
+        Args:
+            atoms (ase.Atoms): The atomic configuration.
+        
+        Returns:
+            bool: True if the molecule is linear, False otherwise.
+        """
+        # Since get_moments_of_inertia() is not available in this class, we'll calculate the inertia tensor manually
+        positions = atoms.get_positions()
+        masses = atoms.get_masses()
+        center_of_mass = np.average(positions, weights=masses, axis=0)
+        rel_positions = positions - center_of_mass
+        inertia_tensor = np.zeros((3, 3))
+        for i in range(len(atoms)):
+            for j in range(3):
+                for k in range(3):
+                    if j == k:
+                        inertia_tensor[j, k] += masses[i] * (np.dot(rel_positions[i], rel_positions[i]) - rel_positions[i, j] * rel_positions[i, k])
+                    else:
+                        inertia_tensor[j, k] -= masses[i] * rel_positions[i, j] * rel_positions[i, k]
+        eigenvalues = np.linalg.eigvalsh(inertia_tensor)
+        # A molecule is considered linear if two of the moments of inertia are significantly larger
+        # than the third, indicating a high degree of symmetry along one axis.
+        # This threshold is somewhat arbitrary and may need adjustment
+        threshold = 1e-3
+        sorted_eigenvalues = sorted(eigenvalues)
+        return sorted_eigenvalues[1] / sorted_eigenvalues[0] > threshold and sorted_eigenvalues[2] / sorted_eigenvalues[0] > threshold
+
     def get_frequencies(self, atoms):
         """Calculate vibrational frequencies for the given atoms.
 
@@ -182,11 +221,21 @@ class AIMNet2Calculator(ase.calculators.calculator.Calculator):
             print(f"Error calculating Hessian matrix: {e}")
             return []
 
+        # Ensure correct handling of degrees of freedom
+        if self.is_linear(atoms):
+            dof = len(atoms) * 3 - 5
+        else:
+            dof = len(atoms) * 3 - 6
+
         vib = ase.vibrations.Vibrations(atoms)
 
         try:
             vib.run()
-            frequencies = vib.get_frequencies()
+            all_frequencies = vib.get_frequencies()
+            if len(all_frequencies) > dof:
+                frequencies = all_frequencies[:dof]  # Adjust frequencies based on degrees of freedom
+            else:
+                frequencies = all_frequencies
         except IndexError as e:
             print(f"Error calculating frequencies: {e}")
             frequencies = []
@@ -196,6 +245,37 @@ class AIMNet2Calculator(ase.calculators.calculator.Calculator):
 
         self.results['frequencies'] = frequencies
         return self.results['frequencies']
+
+    def calculate_frequencies(hessian, atoms):
+        """
+        Calculate vibrational frequencies from the Hessian matrix.
+        
+        Args:
+            hessian (np.ndarray): The mass-weighted Hessian matrix.
+            atoms (ase.Atoms): The atomic configuration.
+        
+        Returns:
+            np.ndarray: The vibrational frequencies.
+        """
+        # Determine if the molecule is linear
+        linear = is_linear(atoms)
+        
+        # Calculate eigenvalues (square roots give frequencies in appropriate units)
+        eigenvalues = np.linalg.eigvalsh(hessian)
+        
+        # Conversion factor from (rad/s)^2 to cm^-1
+        conversion_factor = 1 / (2 * np.pi * ase.units.c * 100)
+        
+        # Convert eigenvalues to frequencies
+        frequencies = np.sqrt(np.abs(eigenvalues)) * conversion_factor
+        
+        # Adjust for degrees of freedom
+        dof = 3 * len(atoms) - (5 if linear else 6)
+        
+        # Ensure you only access valid indices
+        valid_frequencies = frequencies[:dof]
+        
+        return valid_frequencies
 
     def get_vibrational_modes(self, atoms):
         """Calculate and return the vibrational modes for the given atoms.
@@ -223,10 +303,25 @@ class AIMNet2Calculator(ase.calculators.calculator.Calculator):
         Returns:
             float: The calculated potential energy.
         """
-        self.calculate(atoms, properties=['energy'])
-        self.results['energy'] /= ase.units.Hartree
-        return self.results['energy']
-
+        # Check if force_consistent is requested and adjust properties accordingly
+        properties = ['energy']
+        if force_consistent:
+            properties.append('free_energy')
+        
+        self.calculate(atoms, properties=properties)
+        
+        # Use force-consistent energy if requested, otherwise use the standard energy
+        if force_consistent and 'free_energy' in self.results:
+            energy = self.results['free_energy']
+        else:
+            energy = self.results['energy']
+        
+        # Convert energy to eV from Hartree
+        # energy /= ase.units.Hartree
+        # energy = energy
+        energy /= ase.units.Hartree
+        
+        return energy
 
     def _eval_model(self, d, forces=True, dipole=False, frequencies=False, hessian=False, vibrational_modes=False):
         """Evaluate the model with the given inputs and calculation options.
@@ -307,3 +402,201 @@ class AIMNet2Calculator(ase.calculators.calculator.Calculator):
             self.results['frequencies'] = _out['frequencies']
         if do_vibrational_modes:
             self.results['vibrational_modes'] = _out['vibrational_modes']
+
+# class AIMNet2ASEUtilities:
+#     def __init__(self, calculator):
+#         """
+#         Initialize the utilities class with an AIMNet2Calculator instance.
+
+#         Args:
+#             calculator (AIMNet2Calculator): The calculator instance to use for calculations.
+#         """
+#         self.calculator = calculator
+#     def optimize(self, atoms, prec=1e-3, steps=1000, traj=None):
+#         """Optimize the geometry of a given set of atoms.
+
+#         Args:
+#             atoms (ase.Atoms): The atomic configuration to optimize.
+#             prec (float): The convergence criterion for forces.
+#             steps (int): The maximum number of optimization steps.
+#             traj (str): Path to the file where the optimization trajectory will be saved.
+#         """
+#         with torch.jit.optimized_execution(False):
+#             opt = LBFGS(atoms, trajectory=traj)
+#             opt.run(fmax=prec, steps=steps)
+    
+#     def get_charges(atoms):
+#         """Retrieve the charges from the calculation results.
+
+#         Args:
+#             atoms (ase.Atoms): The atomic configuration for which charges are retrieved.
+
+#         Returns:
+#             np.ndarray: The calculated charges.
+#         """
+#         return atoms.calc.results['charges']
+
+#     def pybel2atoms(mol):
+#         """Convert a Pybel molecule to an ASE Atoms object.
+
+#         Args:
+#             mol (pybel.Molecule): The Pybel molecule to convert.
+
+#         Returns:
+#             ase.Atoms: The converted ASE Atoms object.
+#         """
+#         coord = np.array([a.coords for a in mol.atoms])
+#         numbers = np.array([a.atomicnum for a in mol.atoms])
+#         atoms = ase.Atoms(positions=coord, numbers=numbers)
+#         return atoms
+
+#     # def update_mol(mol, sample_atoms, align=False):
+#     #     print(f"Initial atom count: {len(sample_atoms)}")
+#     #     for atom in mol.atoms:
+#     #         new_atom = Atom(atom.symbol, atom.coords)  # Simplified; actual conversion may vary
+#     #         sample_atoms.append(new_atom)
+#     #         print(f"Added atom: {atom.symbol} at {atom.coords}")
+#     #     print(f"Updated atom count: {len(sample_atoms)}")
+
+#     def update_mol(pybel_mol, ase_atoms, align=False):
+#         for pybel_atom in pybel_mol.atoms:
+#             atomic_num = pybel_atom.atomicnum
+#             symbol = chemical_symbols[atomic_num]  # Convert atomic number to symbol
+#             x, y, z = pybel_atom.coords
+#             new_atom = Atom(symbol, (x, y, z))
+#             ase_atoms.append(new_atom)
+
+#     # def update_mol(mol, atoms, align=True):
+#     #     """Update the coordinates of a Pybel molecule from an ASE Atoms object.
+
+#     #     Args:
+#     #         mol (pybel.Molecule): The Pybel molecule to update.
+#     #         atoms (ase.Atoms): The ASE Atoms object providing the new coordinates.
+#     #         align (bool): Whether to align the updated molecule to the original one.
+#     #     """
+#     #     mol_old = pybel.Molecule(pybel.ob.OBMol(mol.OBMol))
+#     #     for i, c in enumerate(atoms.get_positions()):
+#     #         mol.OBMol.GetAtom(i+1).SetVector(*c.tolist())
+#     #     if align:
+#     #         aligner = pybel.ob.OBAlign(False, False)
+#     #         aligner.SetRefMol(mol_old.OBMol)
+#     #         aligner.SetTargetMol(mol.OBMol)
+#     #         aligner.Align()
+#     #         rmsd = aligner.GetRMSD()
+#     #         aligner.UpdateCoords(mol.OBMol)
+#     #         print(f'RMSD: {rmsd:.2f} Angs')
+
+#     def guess_pybel_type(filename):
+#         """Guess the file type based on its extension.
+
+#         Args:
+#             filename (str): The name of the file.
+
+#         Returns:
+#             str: The guessed file type.
+#         """
+#         assert '.' in filename
+#         return os.path.splitext(filename)[1][1:]
+
+#     def guess_charge(mol):
+#         """Guess the charge of a molecule.
+
+#         Args:
+#             mol (pybel.Molecule): The molecule for which to guess the charge.
+
+#         Returns:
+#             int: The guessed charge.
+#         """
+#         m = re.search('charge: (-?\d+)', mol.title)
+#         if m:
+#             charge = int(m.group(1))
+#         else:
+#             charge = mol.charge
+#         return charge
+
+#     def calculate_single_point_energy(calc, atoms):
+#         """Calculate the energy of a molecule.
+
+#         Args:
+#             calc (AIMNet2Calculator): The calculator object.
+#             atoms (ase.Atoms): The atomic configuration.
+
+#         Returns:
+#             float: The calculated energy.
+#         """
+#         single_point_energy = calc.get_potential_energy(atoms)   # get_potential_energy(atoms)
+#         return single_point_energy
+
+#     def calculate_dipole(calc, atoms):
+#         """Calculate the dipole moment of a molecule.
+
+#         Args:
+#             calc (AIMNet2Calculator): The calculator object.
+#             atoms (ase.Atoms): The atomic configuration.
+
+#         Returns:
+#             np.ndarray: The calculated dipole moment.
+#         """
+#         dipole = calc.get_dipole_moment(atoms)
+#         return dipole
+
+#     def calculate_charges(calc, atoms):
+#         """Calculate the charges of a molecule.
+
+#         Args:
+#             calc (AIMNet2Calculator): The calculator object.
+#             atoms (ase.Atoms): The atomic configuration.
+
+#         Returns:
+#             np.ndarray: The calculated charges.
+#         """
+#         charges = calc.results['charges']
+#         return charges
+
+#     def calculate_hessian(calc, atoms):
+#         """Calculate the Hessian of a molecule.
+
+#         Args:
+#             calc (AIMNet2Calculator): The calculator object.
+#             atoms (ase.Atoms): The atomic configuration.
+
+#         Returns:
+#             np.ndarray: The calculated Hessian.
+#         """
+#         return calc.get_hessian(atoms)
+
+#     def calculate_forces(calc, atoms):
+#         """Calculate the forces of a molecule.
+
+#         Args:
+#             calc (AIMNet2Calculator): The calculator object.
+#             atoms (ase.Atoms): The atomic configuration.
+
+#         Returns:
+#             np.ndarray: The calculated forces.
+#         """
+#         return calc.get_forces(atoms)
+
+#     def calculate_frequencies(calc, atoms):
+#         """Calculate vibrational frequencies of a molecule.
+
+#         Args:
+#             calc (AIMNet2Calculator): The calculator object.
+#             atoms (ase.Atoms): The atomic configuration.
+
+#         Returns:
+#             np.ndarray: The calculated vibrational frequencies.
+#         """
+#         if 'hessian' not in calc.results:
+#                 # self.calculate(atoms, properties=['hessian'])
+#                 calc.get_hessian(atoms)
+#                 # self.results['hessian'] = hessian
+#         return calc.get_frequencies(atoms)
+
+
+# """
+# # Example of how to use the utilities class with AIMNet2Calculator
+# calculator = AIMNet2Calculator(model, charge=0)  # Assuming 'model' is defined elsewhere
+# utilities = AIMNet2ASEUtilities(calculator)
+# # Now you can call methods like utilities.optimize(atoms), utilities.get_charges(atoms), etc.
+# """
