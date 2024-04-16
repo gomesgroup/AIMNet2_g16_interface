@@ -87,6 +87,24 @@ def update_mol(pybel_mol, ase_atoms, align=False):
 #         aligner.UpdateCoords(mol.OBMol)
 #         print(f'RMSD: {rmsd:.2f} Angs')
 
+def ein_to_xyz(ein_eou_file, xyz_file):
+    """
+    Converts an EIn file to an XYZ file.
+
+    Args:
+        ein_eou_file (str): Path to the input EIn or EOu file.
+        xyz_file (str): Path to the output XYZ file.
+    """
+    with open(ein_eou_file, 'r') as f_in, open(xyz_file, 'w') as f_out:
+        lines = f_in.readlines()
+        num_atoms = int(lines[0].split()[0])
+        
+        f_out.write(f"{num_atoms}\n")
+        f_out.write("Converted from EIn or EOu file\n")
+        
+        for line in lines[1:num_atoms+1]:
+            f_out.write(line)
+
 def guess_pybel_type(filename):
     """Guess the file type based on its extension.
 
@@ -96,7 +114,21 @@ def guess_pybel_type(filename):
     Returns:
         str: The guessed file type.
     """
+    
     assert '.' in filename
+    extension = os.path.splitext(filename)[1][1:]
+    # if extension == 'xyz':
+    #     return 'xyz'
+    if extension == 'EIn':
+        ein_to_xyz(filename, filename+'EIn.xyz')
+        return 'xyz'
+    elif extension == 'EOu':
+        if os.path.exists(filename):
+            ein_to_xyz(filename, filename+'EOu.xyz')
+        return 'xyz'
+        # return 'xyz'
+    # else:
+    #     raise ValueError(f"Unsupported file type: {extension}")
     return os.path.splitext(filename)[1][1:]
 
 def guess_charge(mol):

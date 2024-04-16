@@ -49,7 +49,13 @@ def main():
     out_file_base = f"{base_name}_out"
     
     in_format = guess_pybel_type(args.in_file)
+    
+    # if in_format == 'EIn':
+    #     args.in_file = ein_to_xyz(args.in_file, base_name+'.xyz')
+    #     in_format = 'xyz'
     out_format = guess_pybel_type(args.out_file)
+    # if out_format == 'EOu':
+    #     out_format = 'xyz'
 
     def convert_to_serializable(obj):
         """

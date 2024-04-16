@@ -1,35 +1,61 @@
 #!/bin/bash
 
-# This script is used to convert the output of aimnet to the format of Gaussian16
+# An interface between Gaussian and AIMNet2 that takes care of Hessian
+# calculations and command line arguments.
 
-# add the following path `models/aimnet2_wb97m-d3_ens.jpt` 
+# if the first argument is --log-all, then the full AIMNet2 output will be
+# added to the Gaussian log file
+DEBUG=0
+if [[ "$1" == "--log-all" ]]; then
+    DEBUG=1
+    shift
+fi
 
+# Final 6 arguments are those passed by Gaussian.
+arg_gauss=("${@: -6}")
 
+# First, move to the directory containing the .EIn file (the Gaussian scratch
+# directory.) This is so that AIMNet2 can produce a .EOut file in the same
+# directory.
+Ein_dir=$(dirname "${arg_gauss[1]}")
+Eout_dir=$(dirname "${arg_gauss[2]}")
+Elog_dir=$(dirname "${arg_gauss[3]}")
 
-read atoms derivs charge spin < $2
+cd "$Ein_dir" || exit
 
-#Create temporary .xyz file
-#the element index should be replaced with element name, and the coordinate should be convert to Angstrom
+# Open input file and load parameters.
+read -r natoms deriv icharg multip < "${arg_gauss[1]}"
 
-echo "Generating mol.tmp"
-cat >> mol.tmp <<EOF
-$atoms
-$(sed -n 2,$(($atoms+1))p < $2 | cut -c 1-72)
-EOF
+# Setup redirection of AIMNet2 output. Here we throw it out instead, unless $DEBUG 
+# is on. We do this because otherwise the Gaussian output gets way too
+# cluttered.
+if [[ $DEBUG -eq 1 ]]; then
+    msg_output="> ${arg_gauss[3]} 2>&1"
+else
+    msg_output=">/dev/null 2>${arg_gauss[3]}"
+fi
 
-# Run aimnet2ase_exec.py
-echo "Running aimnet2ase_exec.py"
-# the keywords in the g16 job will indicate which arguments to pass to aimnet2ase_exec.py:
-# if the g16 job contains the keyword "hess", then aimnet2ase_exec.py should be run with the argument "--hess";
-# if the g16 job contains the keyword "calcfc" or "calcall", then aimnet2ase_exec.py should be run with the argument "--forces"
-# energy, charges, hessians, and forces are written to the file specified by the third argument
-# aimnet
+# Setup AIMNet2 according to run type
+if [[ $deriv -lt 2 ]]; then
+    runtype="--forces"
+else
+    runtype="--hess"
+fi
 
-python calculators/ase/aimnet2ase_exec.py > $3  # $3 is just a filename 
+aimnet2_run="python /Users/passos/GitHub/gomesgroup/AIMNet2_g16_interface/calculators/ase/aimnet2ase_exec.py --model /Users/passos/GitHub/gomesgroup/AIMNet2_g16_interface/models/aimnet2_wb97m-d3_ens.jpt --in_file ${arg_gauss[1]} --out_file ${arg_gauss[2]} $runtype --charge $icharg $msg_output"
+eval "$aimnet2_run"
 
-# if [ "$derivs" -eq 2 ];then
-#   python aimnet2_hess.py >> $3 
-# fi
+echo -e "\n------- AIMNet2 command was ---------" >> "${arg_gauss[3]}"
+echo "?> $aimnet2_run" >> "${arg_gauss[3]}"
+echo "---------------------------------" >> "${arg_gauss[3]}"
 
-rm -rf mol.tmp
+# Currently, non-singlet spins are not supported explicitly by the interface.
+if [[ $multip -ne 1 ]]; then
+    echo "WARNING: Gaussian multiplicity S=$multip is not singlet." >> "${arg_gauss[3]}"
+    echo "         This is not not explicitly supported. Results are likely wrong without" >> "${arg_gauss[3]}"
+    echo "         an appropriate spin argument to AIMNet2!" >> "${arg_gauss[3]}"
+fi
 
+# Close log and flush
+echo "             Control returned to Gaussian." >> "${arg_gauss[3]}"
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" >> "${arg_gauss[3]}"

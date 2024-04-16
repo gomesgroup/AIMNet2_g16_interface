@@ -1,0 +1,120 @@
+#!/bin/bash
+
+# An interface between Gaussian and xtb that takes care of Hessian
+# calculations and command line arguments.
+
+# if the first argument is --log-all, then the full xtb output will be
+# added to the Gaussian log file
+DEBUG=0
+if [[ "$1" == "--log-all" ]]; then
+    DEBUG=1
+    shift
+fi
+
+# Final 6 arguments are those passed by Gaussian.
+arg_gauss=("${@: -6}")
+
+# Remaining arguments are for xtb.
+arg_xtb="${@:1:$#-6}"
+
+# First, move to the directory containing the .EIn file (the Gaussian scratch
+# directory.) This is so that xtb can produce a .EOut file in the same
+# directory.
+Ein_dir=$(dirname "${arg_gauss[1]}")
+Eout_dir=$(dirname "${arg_gauss[2]}")
+Elog_dir=$(dirname "${arg_gauss[3]}")
+
+cd "$Ein_dir" || exit
+
+# Open input file and load parameters.
+read -r natoms deriv icharg multip < "${arg_gauss[1]}"
+
+# Setup redirection of xtb output. Here we throw it out instead, unless $DEBUG
+# is on. We do this because otherwise the Gaussian output gets way too
+# cluttered.
+if [[ $DEBUG -eq 1 ]]; then
+    msg_output="> ${arg_gauss[3]} 2>&1"
+else
+    msg_output=">/dev/null 2>${arg_gauss[3]}"
+fi
+
+# Setup xtb according to run type
+if [[ $deriv -lt 2 ]]; then
+    runtype="--grad"
+else
+    runtype="--hess"
+fi
+
+xtb_run="/usr/local/g16/xtb-6.6.1/bin/xtb ${arg_gauss[1]} $arg_xtb $runtype --charge $icharg $msg_output"
+eval "$xtb_run"
+
+echo -e "\n------- xtb command was ---------" >> "${arg_gauss[3]}"
+echo "?> $xtb_run" >> "${arg_gauss[3]}"
+echo "---------------------------------" >> "${arg_gauss[3]}"
+
+# Currently, non-singlet spins are not supported explicitly by the interface.
+if [[ $multip -ne 1 ]]; then
+    echo "WARNING: Gaussian multiplicity S=$multip is not singlet." >> "${arg_gauss[3]}"
+    echo "         This is not not explicitly supported. Results are likely wrong without" >> "${arg_gauss[3]}"
+    echo "         an appropriate --uhf argument xtb command line!" >> "${arg_gauss[3]}"
+fi
+
+if [[ $deriv -lt 2 ]]; then
+    # This is the standard and identical to the xtb example from the repo. If
+    # we don't need a hessian, just run xtb with the correct Gaussian
+    # input/output file formats and --grad.
+    :
+else
+    # Appending to xtb gaussian formatted output
+    # First, we fake the polarizability and the dipole derivatives, which the
+    # Gaussian Manual says should be of this form,
+    # Polar(I), I=1,6          3D20.12
+    # DDip(I), I=1,9*NAtoms    3D20.12
+    for ((i=1; i<=(3*natoms+2); i++)); do
+        printf "%20.12e%20.12e%20.12e\n" 0.0 0.0 0.0 >> "${arg_gauss[2]}"
+    done
+
+    # Now we have to convert the hessian from the turbomole format that xtb
+    # outputs to the Gaussian format that we want. This is fairly trivial,
+    # We don't need the first line that just contains $hessian
+    read -r _ < hess
+    
+    # Now we are iterating over Hessian matrix elements. We will
+    # append those to the output file in the correct format, given in
+    # the Gaussian manual as
+    # FFX(I), I=1,(3*NAtoms*(3*NAtoms+1))/2      3D20.12
+    # That is, the lower triangular part of the Hessian only. For this we need
+    # to remember which indices we have done.
+    icol=0
+    irow=0
+    # Finally we only print three numbers per line,
+    counter3=0
+
+    while read -r line; do
+        # split the line on whitespaces
+        for val in $line; do
+            # print only if the column index < row index (lower triangle)
+            if [[ $icol -le $irow ]]; then
+                # If printed more than three in a row, start new line
+                if [[ $counter3 -eq 3 ]]; then
+                    counter3=0
+                    echo >> "${arg_gauss[2]}"
+                fi
+                printf "%20.12e" "$val" >> "${arg_gauss[2]}"
+                ((counter3++))
+            fi
+
+            # Increment column index
+            ((icol++))
+            if [[ $icol -eq $((3*natoms)) ]]; then
+                # done this row
+                ((irow++))
+                icol=0
+            fi
+        done
+    done < hessian
+fi
+
+# Close log and flush
+echo "             Control returned to Gaussian." >> "${arg_gauss[3]}"
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" >> "${arg_gauss[3]}"
