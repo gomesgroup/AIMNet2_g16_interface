@@ -136,7 +136,6 @@ dependencies:
   - zlib=1.2.13=hd590300_5
   - zstd=1.5.5=hfc55251_0
   - pip:
-      - autode==1.4.3
       - autograd==1.6.2
       - bcrypt==4.1.2
       - cffi==1.16.0
@@ -173,4 +172,4 @@ dependencies:
       - wrapt==1.16.0
       - zict==3.0.0
       - zipp==3.18.1
-prefix: /home/passos/mambaforge/envs/aimnet
+prefix: /home/gdgomes/mambaforge/envs/aimnet
